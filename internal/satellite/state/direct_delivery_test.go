@@ -2,9 +2,20 @@ package state
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 func TestTarballFilename(t *testing.T) {
@@ -138,5 +149,54 @@ func TestDeliverEmptyEntitiesIsNoop(t *testing.T) {
 	err = d.Deliver(ctx, []Entity{})
 	if err != nil {
 		t.Fatalf("Deliver([]): %v", err)
+	}
+}
+
+func TestDeliverPicksPlatformFromIndex(t *testing.T) {
+	srv := httptest.NewServer(registry.New())
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	idx := v1.ImageIndex(empty.Index)
+	for _, arch := range []string{"amd64", "arm64"} {
+		img, err := random.Image(64, 1)
+		if err != nil {
+			t.Fatalf("random.Image: %v", err)
+		}
+		img, err = mutate.ConfigFile(img, &v1.ConfigFile{OS: "linux", Architecture: arch})
+		if err != nil {
+			t.Fatalf("mutate.ConfigFile: %v", err)
+		}
+		idx = mutate.AppendManifests(idx, mutate.IndexAddendum{
+			Add:        img,
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: arch}},
+		})
+	}
+	ref, err := name.ParseReference(host+"/library/app:v1", name.Insecure)
+	if err != nil {
+		t.Fatalf("ParseReference: %v", err)
+	}
+	if err := remote.WriteIndex(ref, idx); err != nil {
+		t.Fatalf("WriteIndex: %v", err)
+	}
+
+	dir := t.TempDir()
+	d := NewDirectDeliverer(dir, "", "", host, true)
+	d.platform = &v1.Platform{OS: "linux", Architecture: "arm64"}
+	entity := Entity{Repository: "library", Name: "app", Tag: "v1", Digest: "sha256:idx"}
+	if err := d.Deliver(testContext(), []Entity{entity}); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+
+	img, err := tarball.ImageFromPath(filepath.Join(dir, tarballFilename(entity)), nil)
+	if err != nil {
+		t.Fatalf("ImageFromPath: %v", err)
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatalf("ConfigFile: %v", err)
+	}
+	if cfg.Architecture != "arm64" {
+		t.Fatalf("tarball architecture = %q, want arm64", cfg.Architecture)
 	}
 }
