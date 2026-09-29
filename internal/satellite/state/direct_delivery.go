@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -30,6 +31,7 @@ type DirectDeliverer struct {
 	srcUsername string
 	srcPassword string
 	srcRegistry string
+	platform    *v1.Platform
 }
 
 // NewDirectDeliverer creates a deliverer that writes tarballs to imageDir.
@@ -68,6 +70,11 @@ func (d *DirectDeliverer) Deliver(ctx context.Context, entities []Entity) error 
 		nameOpts = append(nameOpts, name.Insecure)
 	}
 
+	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
+	if d.platform != nil {
+		platform = *d.platform
+	}
+
 	// Collect successful writes to merge atomically at the end.
 	updates := make(map[string]string)
 
@@ -93,7 +100,7 @@ func (d *DirectDeliverer) Deliver(ctx context.Context, entities []Entity) error 
 			continue
 		}
 
-		opts := []remote.Option{remote.WithAuth(auth), remote.WithContext(ctx)}
+		opts := []remote.Option{remote.WithAuth(auth), remote.WithContext(ctx), remote.WithPlatform(platform)}
 		img, err := remote.Image(ref, opts...)
 		if err != nil {
 			log.Warn().Err(err).Str("ref", srcRef).Msg("Direct delivery: failed to pull image, skipping")
